@@ -85,7 +85,8 @@ cargo build --release
 notion-lite [opções] [URL]
 
   URL              link https do Notion ou notion://...
-  --safe-mode      desativa a aceleração de GPU (use se a janela ficar em branco)
+  --safe-mode      renderiza sem GPU e lembra a escolha (tela branca, erro de EGL)
+  --gpu            volta a usar a GPU depois do modo seguro
   --new-instance   abre outra janela independente
   --devtools       habilita o inspetor web
   --reset          apaga sessão, cache e preferências
@@ -93,7 +94,9 @@ notion-lite [opções] [URL]
 
 ## Problemas comuns
 
-- **Janela em branco ou piscando (NVIDIA, Wayland):** rode `notion-lite --safe-mode`, ou use a ação "Modo seguro" no menu do ícone.
+- **Janela em branco, piscando ou `Could not create default EGL display: EGL_BAD_PARAMETER`** (NVIDIA, acesso remoto, VMs, alguns Intel): o app detecta a queda do motor de renderização e reabre sozinho em modo seguro, que renderiza por software e fica salvo para as próximas vezes. Para forçar, rode `notion-lite --safe-mode`. Para voltar a usar a GPU depois, `notion-lite --gpu`.
+- **Ainda em branco no NVIDIA + Wayland:** `__NV_DISABLE_EXPLICIT_SYNC=1 notion-lite` ou `GDK_BACKEND=x11 notion-lite --safe-mode`.
+- **Avisos `libenchant ... Error loading plugin`:** são inofensivos. Só indicam que algum corretor ortográfico opcional não está instalado.
 - **Sem correção ortográfica em português:** instale um dicionário hunspell de pt-BR (`hunspell-pt-br` ou `hunspell-pt_br`, conforme a distro).
 - **Quero sair da conta e limpar tudo:** `notion-lite --reset`.
 

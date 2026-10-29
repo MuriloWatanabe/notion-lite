@@ -70,3 +70,21 @@ impl WindowState {
 pub fn is_first_run() -> bool {
     !state_file().exists()
 }
+
+fn safe_mode_file() -> PathBuf {
+    config_dir().join("safe-mode")
+}
+
+/// Modo seguro lembrado (ativado manualmente ou depois de um crash do motor de renderização).
+pub fn safe_mode_saved() -> bool {
+    safe_mode_file().exists()
+}
+
+pub fn set_safe_mode(on: bool) {
+    if on {
+        let _ = std::fs::create_dir_all(config_dir());
+        let _ = std::fs::write(safe_mode_file(), "1\n");
+    } else {
+        let _ = std::fs::remove_file(safe_mode_file());
+    }
+}

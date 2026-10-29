@@ -25,9 +25,9 @@ use tao::{
     window::{Fullscreen, WindowBuilder},
 };
 use webkit2gtk::{
-    CacheModel, NotificationPermissionRequest, PermissionRequestExt, SettingsExt,
-    UserMediaPermissionRequest, UserMediaPermissionRequestExt, WebContextExt,
-    WebViewExt as WebKitViewExt,
+    CacheModel, HardwareAccelerationPolicy, NotificationPermissionRequest, PermissionRequestExt,
+    SettingsExt, UserMediaPermissionRequest, UserMediaPermissionRequestExt, WebContextExt,
+    WebProcessTerminationReason, WebViewExt as WebKitViewExt,
 };
 use wry::{NewWindowResponse, WebContext, WebViewBuilder, WebViewBuilderExtUnix, WebViewExtUnix};
 
@@ -75,7 +75,8 @@ fn print_help() {
          Uso: notion-lite [opções] [URL]\n\n\
          URL pode ser um link https do Notion ou notion://...\n\n\
          Opções:\n  \
-           --safe-mode      desativa aceleração de GPU (use se a janela ficar em branco)\n  \
+           --safe-mode      renderiza sem GPU e lembra a escolha (tela branca, erro de EGL)\n  \
+           --gpu            volta a usar a GPU depois de um --safe-mode\n  \
            --new-instance   não reaproveita a janela já aberta\n  \
            --devtools       habilita o inspetor web (clique direito → Inspecionar)\n  \
            --reset          apaga sessão, cache e preferências\n  \
@@ -151,8 +152,12 @@ fn main() -> wry::Result<()> {
         println!("notion-lite {VERSION}");
         return Ok(());
     }
-    let safe_mode =
-        has(&mut args, "--safe-mode") || std::env::var_os("NOTION_LITE_SAFE_MODE").is_some();
+    if has(&mut args, "--gpu") {
+        state::set_safe_mode(false);
+    }
+    let safe_mode = has(&mut args, "--safe-mode")
+        || std::env::var_os("NOTION_LITE_SAFE_MODE").is_some()
+        || state::safe_mode_saved();
     let new_instance = has(&mut args, "--new-instance");
     let devtools =
         has(&mut args, "--devtools") || std::env::var_os("NOTION_LITE_DEVTOOLS").is_some();
@@ -186,9 +191,17 @@ fn main() -> wry::Result<()> {
     // software mais cara; o modo seguro gasta ~150 MB a menos nesse caso.
     let safe_mode = safe_mode || !has_gpu_render_node();
     if safe_mode {
-        // Contorna telas em branco com alguns drivers (NVIDIA, VMs, Wayland antigo).
-        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
-        std::env::set_var("WEBKIT_DISABLE_COMPOSITING_MODE", "1");
+        eprintln!("notion-lite: modo seguro (renderização por software)");
+        // Renderização 100% por software: contorna tela em branco e o crash
+        // "Could not create default EGL display" (NVIDIA, acesso remoto, VMs, alguns Intel).
+        for (k, v) in [
+            ("WEBKIT_DISABLE_DMABUF_RENDERER", "1"),
+            ("WEBKIT_DISABLE_COMPOSITING_MODE", "1"),
+            ("WEBKIT_SKIA_ENABLE_CPU_RENDERING", "1"),
+            ("LIBGL_ALWAYS_SOFTWARE", "1"),
+        ] {
+            std::env::set_var(k, v);
+        }
     }
 
     let event_loop = EventLoopBuilder::<UserEvent>::with_user_event()
@@ -287,7 +300,47 @@ fn main() -> wry::Result<()> {
         settings.set_enable_back_forward_navigation_gestures(true);
         settings.set_javascript_can_access_clipboard(true);
         settings.set_enable_developer_extras(devtools);
+        if safe_mode {
+            settings.set_hardware_acceleration_policy(HardwareAccelerationPolicy::Never);
+        }
     }
+    // O processo de renderização caiu (ex.: EGL_BAD_PARAMETER com alguns drivers)?
+    // Sem modo seguro, reabre o app nele e lembra a escolha; com ele, só recarrega.
+    if !safe_mode {
+        let restart_url = start_url.clone();
+        let keep_socket = new_instance;
+        wk.connect_web_process_terminated(move |_, reason| {
+            if reason != WebProcessTerminationReason::Crashed {
+                return;
+            }
+            eprintln!(
+                "notion-lite: o motor de renderização caiu; reabrindo em modo seguro (--safe-mode)"
+            );
+            state::set_safe_mode(true);
+            if !keep_socket {
+                instance::cleanup();
+            }
+            if let Ok(exe) = std::env::current_exe() {
+                let mut cmd = Command::new(exe);
+                cmd.arg("--safe-mode");
+                if keep_socket {
+                    cmd.arg("--new-instance");
+                }
+                if urls::from_arg(&restart_url).is_some() {
+                    cmd.arg(&restart_url);
+                }
+                let _ = cmd.spawn();
+            }
+            std::process::exit(0);
+        });
+    } else {
+        wk.connect_web_process_terminated(|wv, reason| {
+            if reason == WebProcessTerminationReason::Crashed {
+                wv.reload();
+            }
+        });
+    }
+
     // Notificações (lembretes, menções) e microfone (Notion AI Meeting Notes).
     wk.connect_permission_request(|_, request| {
         if request.is::<NotificationPermissionRequest>() {
