@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dependências do sistema
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
+      - run: cargo build --release
+
+  # Constrói o pacote do AUR num Arch de verdade, a partir do código deste commit.
+  aur:
+    runs-on: ubuntu-24.04
+    container: archlinux:latest
+    steps:
+      - name: Dependências
+        run: |
+          pacman -Syu --noconfirm --needed base-devel git cargo webkit2gtk-4.1 gtk3 xdg-utils hicolor-icon-theme namcap
+          useradd -m builder
+      - uses: actions/checkout@v4
+      - name: makepkg
+        run: |
+          ver=$(grep -m1 '^pkgver=' aur/notion-lite/PKGBUILD | cut -d= -f2)
+          mkdir -p /home/builder/pkg
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git archive --format=tar.gz --prefix="notion-lite-$ver/" -o "/home/builder/pkg/notion-lite-$ver.tar.gz" HEAD
+          cp aur/notion-lite/PKGBUILD /home/builder/pkg/
+          chown -R builder /home/builder/pkg
+          su builder -c "cd /home/builder/pkg && makepkg --noconfirm"
+      - name: namcap
+        run: namcap /home/builder/pkg/*.pkg.tar.zst || true
+      - name: .SRCINFO atualizado
+        run: |
+          chown -R builder aur
+          for d in aur/*/; do
+            su builder -c "cd $d && makepkg --printsrcinfo" > /tmp/srcinfo
+            diff -u "$d/.SRCINFO" /tmp/srcinfo
+          done

@@ -1,0 +1,27 @@
+pkgbase = notion-lite-git
+	pkgdesc = Lightweight unofficial Notion client written in Rust (WebKitGTK, no Electron) - development version
+	pkgver = 0.1.0.r0.g0000000
+	pkgrel = 1
+	url = https://github.com/MuriloWatanabe/notion-lite
+	arch = x86_64
+	arch = aarch64
+	license = MIT
+	makedepends = cargo
+	makedepends = git
+	depends = webkit2gtk-4.1
+	depends = gtk3
+	depends = glib2
+	depends = libsoup3
+	depends = cairo
+	depends = gdk-pixbuf2
+	depends = xdg-utils
+	depends = hicolor-icon-theme
+	optdepends = libnotify: notificação de downloads concluídos
+	optdepends = hunspell-en_us: correção ortográfica em inglês
+	optdepends = gst-plugins-good: áudio e vídeo embutidos nas páginas
+	provides = notion-lite
+	conflicts = notion-lite
+	source = notion-lite::git+https://github.com/MuriloWatanabe/notion-lite.git
+	sha256sums = SKIP
+
+pkgname = notion-lite-git

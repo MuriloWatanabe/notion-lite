@@ -1,0 +1,26 @@
+[Desktop Entry]
+Type=Application
+Name=Notion Lite
+GenericName=Notes and Docs
+GenericName[pt_BR]=Notas e documentos
+Comment=Lightweight unofficial Notion client
+Comment[pt_BR]=Cliente leve e não oficial do Notion
+Exec=notion-lite %U
+Icon=notion-lite
+Terminal=false
+StartupNotify=true
+StartupWMClass=notion-lite
+Categories=Office;Utility;
+Keywords=notion;notes;wiki;docs;tasks;notas;tarefas;
+MimeType=x-scheme-handler/notion;
+Actions=NewWindow;SafeMode;
+
+[Desktop Action NewWindow]
+Name=New Window
+Name[pt_BR]=Nova janela
+Exec=notion-lite --new-instance
+
+[Desktop Action SafeMode]
+Name=Safe Mode (no GPU)
+Name[pt_BR]=Modo seguro (sem GPU)
+Exec=notion-lite --safe-mode --new-instance

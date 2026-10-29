@@ -1,0 +1,5 @@
+/target
+/aur/*/src
+/aur/*/pkg
+/aur/*/*.tar.*
+/aur/*/notion-lite

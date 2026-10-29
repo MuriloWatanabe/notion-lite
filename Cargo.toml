@@ -1,0 +1,26 @@
+[package]
+name = "notion-lite"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+description = "Cliente leve e não oficial do Notion para Linux, em Rust + WebKitGTK"
+license = "MIT"
+repository = "https://github.com/MuriloWatanabe/notion-lite"
+readme = "README.md"
+keywords = ["notion", "desktop", "webview", "linux"]
+
+[dependencies]
+wry = "0.57"
+tao = "0.37"
+webkit2gtk = "2.0"
+gtk = "0.18"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+dirs = "6"
+
+[profile.release]
+opt-level = "s"
+lto = "fat"
+codegen-units = 1
+strip = true
+panic = "abort"
