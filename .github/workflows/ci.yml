@@ -29,6 +29,9 @@ jobs:
   aur:
     runs-on: ubuntu-24.04
     container: archlinux:latest
+    defaults:
+      run:
+        shell: bash
     steps:
       - name: Dependências
         run: |
@@ -51,5 +54,6 @@ jobs:
           chown -R builder aur
           for d in aur/*/; do
             su builder -c "cd $d && makepkg --printsrcinfo" > /tmp/srcinfo
-            diff -u "$d/.SRCINFO" /tmp/srcinfo
+            # No pacote -git o pkgver muda a cada commit (vem do pkgver()), então não entra na comparação.
+            diff -u <(grep -v '^\s*pkgver = ' "$d/.SRCINFO") <(grep -v '^\s*pkgver = ' /tmp/srcinfo)
           done
