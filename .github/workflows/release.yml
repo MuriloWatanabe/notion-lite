@@ -2,8 +2,11 @@ name: Release
 
 # Disparado por scripts/release.sh (git push da tag vX.Y.Z).
 # Compila o pacote num Arch de verdade e publica em GitHub Releases:
-#   - notion-lite-X.Y.Z-1-x86_64.pkg.tar.zst  → sudo pacman -U <link>
+#   - notion-lite.db / notion-lite.files      → repositório do pacman (pacman -S notion-lite)
+#   - notion-lite-X.Y.Z-1-x86_64.pkg.tar.zst  → o pacote (também serve para pacman -U <link>)
 #   - notion-lite-X.Y.Z-x86_64-linux.tar.gz   → binário avulso para outras distros
+# Como o repositório aponta para releases/latest/download, quem o adicionou recebe
+# cada nova versão no pacman -Syu.
 on:
   push:
     tags: ["v*"]
@@ -50,8 +53,16 @@ jobs:
           root=/home/builder/pkg/pkg/notion-lite
           mkdir -p dist && cp /home/builder/pkg/notion-lite-*.pkg.tar.zst dist/
           tar -C "$root" -czf "dist/notion-lite-$v-x86_64-linux.tar.gz" usr
-          (cd dist && sha256sum * > SHA256SUMS)
-          ls -la dist
+
+      - name: Repositório do pacman
+        run: |
+          cd dist
+          repo-add -q notion-lite.db.tar.gz notion-lite-*.pkg.tar.zst
+          # repo-add cria symlinks; o GitHub precisa de arquivos de verdade
+          for f in notion-lite.db notion-lite.files; do cp --remove-destination "$(readlink "$f")" "$f"; done
+          rm -f notion-lite.db.tar.gz notion-lite.files.tar.gz
+          sha256sum * > SHA256SUMS
+          ls -la
 
       - name: Publica
         env:
@@ -63,11 +74,14 @@ jobs:
           cat > notes.md <<EOF
           ## Install
 
-          **Arch Linux and derivatives**
+          **Arch Linux and derivatives** — add the repository once, then install and update with pacman:
 
           \`\`\`bash
-          sudo pacman -U $url
+          printf '\\n[notion-lite]\\nSigLevel = Never\\nServer = https://github.com/$GITHUB_REPOSITORY/releases/latest/download\\n' | sudo tee -a /etc/pacman.conf
+          sudo pacman -Syu notion-lite
           \`\`\`
+
+          Or install just this version: \`sudo pacman -U $url\`
 
           **Other distros** (needs WebKitGTK 4.1 and GTK 3): download \`notion-lite-$v-x86_64-linux.tar.gz\` and run \`sudo tar -C / -xzf notion-lite-$v-x86_64-linux.tar.gz\`.
           EOF

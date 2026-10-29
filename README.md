@@ -52,15 +52,26 @@ Notion's own shortcuts (`Ctrl+K`, `Ctrl+P`, `/`, etc.) keep working as usual.
 
 ### Arch Linux and derivatives
 
-Not on the AUR yet. AUR registration is temporarily closed. Until then, install the prebuilt package from the [latest release](https://github.com/MuriloWatanabe/notion-lite/releases/latest). Copy the `sudo pacman -U ...` command from the release notes, for example:
+Add the Notion Lite repository once:
 
 ```bash
-sudo pacman -U https://github.com/MuriloWatanabe/notion-lite/releases/download/v0.1.0/notion-lite-0.1.0-1-x86_64.pkg.tar.zst
+printf '\n[notion-lite]\nSigLevel = Never\nServer = https://github.com/MuriloWatanabe/notion-lite/releases/latest/download\n' | sudo tee -a /etc/pacman.conf
 ```
 
-To update, run the same command with the newer release's link.
+Then install it like any other package:
 
-Or build it yourself from the PKGBUILD in this repository:
+```bash
+sudo pacman -Syu notion-lite     # or: yay -S notion-lite
+```
+
+New versions arrive with your regular `sudo pacman -Syu` (or `yay`). The app shows up as **Notion Lite** in your app menu, or you can run `notion-lite`.
+
+To uninstall, run `sudo pacman -Rns notion-lite` and delete the `[notion-lite]` block from `/etc/pacman.conf`.
+
+> The repository is served from this project's GitHub Releases over HTTPS. The packages aren't GPG-signed yet, hence `SigLevel = Never`. The package isn't on the AUR yet because AUR registration is temporarily closed.
+
+<details>
+<summary>Build it yourself instead</summary>
 
 ```bash
 sudo pacman -S --needed base-devel git
@@ -69,7 +80,7 @@ cd notion-lite/aur/notion-lite-git
 makepkg -si
 ```
 
-The app then shows up as **Notion Lite** in your app menu, or you can run `notion-lite`. To update a self-built copy, `git pull` and run `makepkg -si` again inside `aur/notion-lite-git`.
+</details>
 
 ### Other distros
 
