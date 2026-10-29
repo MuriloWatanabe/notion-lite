@@ -52,7 +52,15 @@ Notion's own shortcuts (`Ctrl+K`, `Ctrl+P`, `/`, etc.) keep working as usual.
 
 ### Arch Linux and derivatives
 
-Not on the AUR yet. AUR registration is temporarily closed. Until then, build the package with the PKGBUILD from this repository:
+Not on the AUR yet. AUR registration is temporarily closed. Until then, install the prebuilt package from the [latest release](https://github.com/MuriloWatanabe/notion-lite/releases/latest). Copy the `sudo pacman -U ...` command from the release notes, for example:
+
+```bash
+sudo pacman -U https://github.com/MuriloWatanabe/notion-lite/releases/download/v0.1.0/notion-lite-0.1.0-1-x86_64.pkg.tar.zst
+```
+
+To update, run the same command with the newer release's link.
+
+Or build it yourself from the PKGBUILD in this repository:
 
 ```bash
 sudo pacman -S --needed base-devel git
@@ -61,9 +69,15 @@ cd notion-lite/aur/notion-lite-git
 makepkg -si
 ```
 
-The app then shows up as **Notion Lite** in your app menu, or you can run `notion-lite`.
+The app then shows up as **Notion Lite** in your app menu, or you can run `notion-lite`. To update a self-built copy, `git pull` and run `makepkg -si` again inside `aur/notion-lite-git`.
 
-To update, run the same commands again in a fresh clone, or `git pull` and then `makepkg -si` inside `aur/notion-lite-git`.
+### Other distros
+
+Download `notion-lite-X.Y.Z-x86_64-linux.tar.gz` from the [latest release](https://github.com/MuriloWatanabe/notion-lite/releases/latest), install WebKitGTK 4.1 and GTK 3, then:
+
+```bash
+sudo tar -C / -xzf notion-lite-*-x86_64-linux.tar.gz
+```
 
 ### Building from source (any distro)
 

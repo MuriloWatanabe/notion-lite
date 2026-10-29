@@ -1,0 +1,75 @@
+name: Release
+
+# Disparado por scripts/release.sh (git push da tag vX.Y.Z).
+# Compila o pacote num Arch de verdade e publica em GitHub Releases:
+#   - notion-lite-X.Y.Z-1-x86_64.pkg.tar.zst  → sudo pacman -U <link>
+#   - notion-lite-X.Y.Z-x86_64-linux.tar.gz   → binário avulso para outras distros
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    container: archlinux:latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Dependências
+        run: |
+          pacman -Syu --noconfirm --needed base-devel git cargo webkit2gtk-4.1 gtk3 xdg-utils hicolor-icon-theme github-cli
+          useradd -m builder
+
+      - uses: actions/checkout@v4
+
+      - name: Confere versões
+        run: |
+          tag=${GITHUB_REF_NAME#v}
+          cargo_v=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
+          pkg_v=$(grep -m1 '^pkgver=' aur/notion-lite/PKGBUILD | cut -d= -f2)
+          echo "tag=$tag Cargo.toml=$cargo_v PKGBUILD=$pkg_v"
+          [[ $tag == "$cargo_v" && $tag == "$pkg_v" ]] || { echo "::error::versões diferentes — use scripts/release.sh"; exit 1; }
+
+      - name: makepkg
+        run: |
+          v=${GITHUB_REF_NAME#v}
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          mkdir -p /home/builder/pkg
+          git archive --format=tar.gz --prefix="notion-lite-$v/" -o "/home/builder/pkg/notion-lite-$v.tar.gz" HEAD
+          cp aur/notion-lite/PKGBUILD /home/builder/pkg/
+          chown -R builder /home/builder/pkg
+          su builder -c "cd /home/builder/pkg && makepkg --noconfirm"
+
+      - name: Binário avulso
+        run: |
+          v=${GITHUB_REF_NAME#v}
+          root=/home/builder/pkg/pkg/notion-lite
+          mkdir -p dist && cp /home/builder/pkg/notion-lite-*.pkg.tar.zst dist/
+          tar -C "$root" -czf "dist/notion-lite-$v-x86_64-linux.tar.gz" usr
+          (cd dist && sha256sum * > SHA256SUMS)
+          ls -la dist
+
+      - name: Publica
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          v=${GITHUB_REF_NAME#v}
+          pkg=$(basename dist/notion-lite-*.pkg.tar.zst)
+          url="https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/$pkg"
+          cat > notes.md <<EOF
+          ## Install
+
+          **Arch Linux and derivatives**
+
+          \`\`\`bash
+          sudo pacman -U $url
+          \`\`\`
+
+          **Other distros** (needs WebKitGTK 4.1 and GTK 3): download \`notion-lite-$v-x86_64-linux.tar.gz\` and run \`sudo tar -C / -xzf notion-lite-$v-x86_64-linux.tar.gz\`.
+          EOF
+          gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" \
+            --title "Notion Lite $v" --notes-file notes.md --generate-notes
