@@ -4,66 +4,70 @@
 
 # Notion Lite
 
-**Cliente leve e não oficial do Notion para Linux, feito em Rust.**
+**A lightweight, unofficial Notion desktop client for Linux, written in Rust.**
 
-Todas as funções do Notion, sem Electron: um binário de menos de 1 MB que usa o WebKitGTK do sistema.
-
-`yay -S notion-lite`
+Every Notion feature, no Electron: a sub-1 MB binary on top of your system's WebKitGTK.
 
 </div>
 
-> *English: Lightweight, unofficial Notion desktop client for Linux. A <1 MB Rust binary on top of the system WebKitGTK instead of a bundled Chromium. Every Notion feature works, because it runs the real Notion web app, plus native integration (persistent session, external links, OAuth popups, downloads, `notion://` links, single instance).*
+## Why
 
-## Por que
-
-Os clientes Linux do Notion disponíveis hoje empacotam um Chromium inteiro com Electron. O Notion Lite usa o motor web que já vem no sistema (WebKitGTK, o mesmo do GNOME Web), e o resultado é:
+The Notion clients currently available for Linux bundle a whole Chromium through Electron. Notion Lite uses the web engine your system already ships (WebKitGTK, the same one GNOME Web uses):
 
 | | Notion Lite | Chromium/Electron |
 |---|---|---|
-| Tamanho do executável | **0,8 MB** | ~150–250 MB por app |
-| RAM na tela de login, sem GPU | **~500 MB** | ~700 MB (Chromium puro, sem o Node do Electron) |
-| Tempo até a tela de login | ~3 s | — |
+| Executable size | **0.8 MB** | ~150–250 MB per app |
+| RAM on the login screen, no GPU | **~500 MB** | ~700 MB (plain Chromium, without Electron's Node) |
+| Time to login screen | ~3 s | — |
 
-Medido em Linux x86-64 sem GPU (Xvfb), somando o PSS de todos os processos. Com GPU os números mudam, mas a proporção se mantém. A maior parte da RAM é o JavaScript do próprio Notion, que nenhum cliente consegue evitar.
+Measured on x86-64 Linux without a GPU (Xvfb), summing the PSS of all processes. Numbers change with a GPU, but the ratio holds. Most of the RAM goes to Notion's own JavaScript, which no client can avoid.
 
-## O que funciona
+## Features
 
-Tudo o que o Notion web faz: páginas, databases, IA, comentários, calendário, e-mail, compartilhamento, tempo real e importação/exportação. Além disso:
+Everything the Notion web app does works: pages, databases, AI, comments, Calendar, Mail, sharing, real-time collaboration, import/export. On top of that, Notion Lite adds:
 
-- **Sessão salva:** você entra uma vez e continua logado.
-- **Login com Google, Apple, Microsoft, passkey e SSO:** abre em popup dentro do app e volta logado.
-- **Links externos** abrem no navegador padrão. `mailto:`, `zoommtg:`, `slack:` etc. vão para o app certo.
-- **Links `notion://`** e links do Notion abertos pelo sistema caem na janela que já está aberta (instância única).
-- **Downloads** vão para `~/Downloads`, com notificação ao concluir.
-- **Notificações** do Notion (lembretes e menções) aparecem como notificações do sistema.
-- **Correção ortográfica** no idioma do sistema e em inglês.
-- **Janela e zoom** são lembrados entre execuções.
-- **Sem GPU** (VM ou driver problemático), o modo de renderização mais leve é ativado sozinho.
+- **Persistent session.** Log in once and stay logged in.
+- **Google, Apple, Microsoft, passkey and SSO login.** It opens in a popup inside the app and returns you logged in.
+- **External links** open in your default browser. `mailto:`, `zoommtg:`, `slack:` and similar links go to the right app.
+- **`notion://` links** and Notion links opened by the system land in the window that's already open (single instance).
+- **Downloads** go to `~/Downloads`, with a notification when they finish.
+- **Notion notifications** (reminders, mentions) show up as system notifications.
+- **Spell checking** in your system language and English.
+- **Window size, position and zoom** are remembered between runs.
+- **Automatic fallback.** With no GPU (VM or a problematic driver) or a renderer crash, it switches to software rendering by itself.
 
-### Atalhos
+### Shortcuts
 
 | | |
 |---|---|
 | `Ctrl` `+` / `-` / `0` | Zoom |
-| `Ctrl` `R` ou `F5` | Recarregar |
-| `F11` | Tela cheia |
-| `Alt` `←` / `→` | Voltar / avançar |
-| `Ctrl` `Q` | Sair |
+| `Ctrl` `R` or `F5` | Reload |
+| `F11` | Fullscreen |
+| `Alt` `←` / `→` | Back / forward |
+| `Ctrl` `Q` | Quit |
 
-Os atalhos do Notion (`Ctrl+K`, `Ctrl+P`, `/` etc.) continuam funcionando normalmente.
+Notion's own shortcuts (`Ctrl+K`, `Ctrl+P`, `/`, etc.) keep working as usual.
 
-## Instalação
+## Installation
 
-### Arch Linux e derivados (AUR)
+### Arch Linux and derivatives
+
+Not on the AUR yet. AUR registration is temporarily closed. Until then, build the package with the PKGBUILD from this repository:
 
 ```bash
-yay -S notion-lite        # versão estável
-yay -S notion-lite-git    # direto do branch main
+sudo pacman -S --needed base-devel git
+git clone https://github.com/MuriloWatanabe/notion-lite.git
+cd notion-lite/aur/notion-lite-git
+makepkg -si
 ```
 
-### Compilando
+The app then shows up as **Notion Lite** in your app menu, or you can run `notion-lite`.
 
-Dependências: Rust 1.85+, WebKitGTK 4.1 e GTK 3.
+To update, run the same commands again in a fresh clone, or `git pull` and then `makepkg -si` inside `aur/notion-lite-git`.
+
+### Building from source (any distro)
+
+Requirements: Rust 1.85+, WebKitGTK 4.1 and GTK 3.
 
 ```bash
 # Arch
@@ -79,48 +83,49 @@ cargo build --release
 ./target/release/notion-lite
 ```
 
-## Uso
+## Usage
 
 ```
-notion-lite [opções] [URL]
+notion-lite [options] [URL]
 
-  URL              link https do Notion ou notion://...
-  --safe-mode      renderiza sem GPU e lembra a escolha (tela branca, erro de EGL)
-  --gpu            volta a usar a GPU depois do modo seguro
-  --new-instance   abre outra janela independente
-  --devtools       habilita o inspetor web
-  --reset          apaga sessão, cache e preferências
+  URL              an https Notion link or notion://...
+  --safe-mode      render without the GPU and remember it (blank window, EGL errors)
+  --gpu            go back to GPU rendering after safe mode
+  --new-instance   open a separate, independent window
+  --devtools       enable the web inspector
+  --reset          delete session, cache and preferences
 ```
 
-## Problemas comuns
+## Troubleshooting
 
-- **Janela em branco, piscando ou `Could not create default EGL display: EGL_BAD_PARAMETER`** (NVIDIA, acesso remoto, VMs, alguns Intel): o app detecta a queda do motor de renderização e reabre sozinho em modo seguro, que renderiza por software e fica salvo para as próximas vezes. Para forçar, rode `notion-lite --safe-mode`. Para voltar a usar a GPU depois, `notion-lite --gpu`.
-- **Ainda em branco no NVIDIA + Wayland:** `__NV_DISABLE_EXPLICIT_SYNC=1 notion-lite` ou `GDK_BACKEND=x11 notion-lite --safe-mode`.
-- **Avisos `libenchant ... Error loading plugin`:** são inofensivos. Só indicam que algum corretor ortográfico opcional não está instalado.
-- **Sem correção ortográfica em português:** instale um dicionário hunspell de pt-BR (`hunspell-pt-br` ou `hunspell-pt_br`, conforme a distro).
-- **Quero sair da conta e limpar tudo:** `notion-lite --reset`.
+- **Blank or flickering window, or `Could not create default EGL display: EGL_BAD_PARAMETER`** (NVIDIA, remote sessions, VMs, some Intel GPUs): the app detects when the renderer crashes and reopens itself in safe mode. Safe mode renders in software and is remembered for next time. To force it, run `notion-lite --safe-mode`. To switch back to the GPU later, run `notion-lite --gpu`.
+- **Still blank on NVIDIA + Wayland:** try `__NV_DISABLE_EXPLICIT_SYNC=1 notion-lite` or `GDK_BACKEND=x11 notion-lite --safe-mode`.
+- **Hybrid graphics (Intel + NVIDIA on `nouveau`):** try `DRI_PRIME=0 notion-lite` to force the integrated GPU, or install the proprietary NVIDIA driver.
+- **`libenchant ... Error loading plugin` warnings:** these are harmless. They only mean an optional spell-checking backend isn't installed.
+- **No spell checking in your language:** install the matching hunspell dictionary (for example `hunspell-de`, `hunspell-es_es`, `hunspell-pt-br`).
+- **Log out and wipe everything:** `notion-lite --reset`.
 
-## Privacidade
+## Privacy
 
-O Notion Lite não coleta nada. Ele só conversa com os servidores do Notion (e com os provedores de login que você escolher). Sessão e cache ficam em `~/.local/share/notion-lite` e as preferências em `~/.config/notion-lite`.
+Notion Lite collects nothing. It only talks to Notion's servers and to whichever login provider you choose. Session and cache live in `~/.local/share/notion-lite`, preferences in `~/.config/notion-lite`.
 
-## Como funciona
+## How it works
 
 ```
 src/
-├── main.rs      # janela (tao), WebView (wry/WebKitGTK), atalhos, permissões, estado
-├── popup.rs     # popups ligados à janela principal (OAuth com window.opener)
-├── instance.rs  # instância única via socket Unix em $XDG_RUNTIME_DIR
-├── state.rs     # tamanho, posição e zoom da janela
-└── urls.rs      # o que fica no app × o que vai para o navegador (com testes)
-aur/             # PKGBUILDs (notion-lite e notion-lite-git)
-assets/          # ícone e arquivo .desktop
+├── main.rs      # window (tao), WebView (wry/WebKitGTK), shortcuts, permissions, crash recovery
+├── popup.rs     # popups tied to the main window (OAuth with window.opener)
+├── instance.rs  # single instance through a Unix socket in $XDG_RUNTIME_DIR
+├── state.rs     # window size, position, zoom and safe mode
+└── urls.rs      # what stays in the app vs. what goes to the browser (with tests)
+aur/             # PKGBUILDs (notion-lite and notion-lite-git)
+assets/          # icon and .desktop file
 ```
 
-## Aviso
+## Disclaimer
 
-Projeto independente, sem afiliação com a Notion Labs, Inc. "Notion" é marca registrada da Notion Labs, Inc. Este app apenas exibe o serviço oficial notion.so, e o uso continua sujeito aos termos do Notion.
+Independent project, not affiliated with Notion Labs, Inc. "Notion" is a trademark of Notion Labs, Inc. This app only displays the official notion.so service, and your use of it remains subject to Notion's terms.
 
-## Licença
+## License
 
 [MIT](LICENSE) © Murilo Watanabe
