@@ -8,14 +8,12 @@
 mod instance;
 mod popup;
 mod state;
+mod tabs;
 mod urls;
 
 use std::{cell::RefCell, process::Command, rc::Rc};
 
-use gtk::{
-    glib::{Cast, ObjectExt},
-    prelude::GtkWindowExt,
-};
+use gtk::prelude::GtkWindowExt;
 
 use tao::{
     dpi::{LogicalSize, PhysicalPosition},
@@ -24,32 +22,33 @@ use tao::{
     platform::unix::{EventLoopBuilderExtUnix, WindowExtUnix},
     window::{Fullscreen, WindowBuilder},
 };
-use webkit2gtk::{
-    CacheModel, HardwareAccelerationPolicy, NotificationPermissionRequest, PermissionRequestExt,
-    SettingsExt, UserMediaPermissionRequest, UserMediaPermissionRequestExt, WebContextExt,
-    WebProcessTerminationReason, WebViewExt as WebKitViewExt,
-};
-use wry::{NewWindowResponse, WebContext, WebViewBuilder, WebViewBuilderExtUnix, WebViewExtUnix};
+use wry::WebContext;
 
-use crate::state::WindowState;
+use crate::{state::WindowState, tabs::Tabs};
 
 const APP_ID: &str = "io.github.murilowatanabe.NotionLite";
 pub const ICON_NAME: &str = "notion-lite";
-const HOME_URL: &str = "https://www.notion.so/";
+/// O app (e o cookie de sessão) mora em app.notion.com; www.notion.so é só a página de
+/// marketing e não recebe o cookie, então abrir por ele parecia "deslogado".
+const HOME_URL: &str = "https://app.notion.com/";
 /// Na primeira execução vai direto para o login em vez da página de marketing.
 const LOGIN_URL: &str = "https://www.notion.so/login";
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Debug)]
 enum UserEvent {
-    Title(String),
+    Title(u64, String),
+    NewTab(Option<String>),
+    CloseTab(u64),
+    /// A aba ativa mudou.
+    Switched,
     /// Pedido vindo de outra instância (ou de um link notion://).
     Remote(String),
     Ipc(String),
 }
 
 /// Atalhos que um navegador teria e a página do Notion não oferece.
-const INIT_SCRIPT: &str = r#"
+pub(crate) const INIT_SCRIPT: &str = r#"
 (() => {
   const send = (m) => window.ipc && window.ipc.postMessage(m);
   window.addEventListener('keydown', (e) => {
@@ -61,6 +60,10 @@ const INIT_SCRIPT: &str = r#"
     else if ((mod && !e.shiftKey && e.key.toLowerCase() === 'r') || e.key === 'F5') location.reload();
     else if (e.key === 'F11') send('fullscreen');
     else if (mod && !e.shiftKey && e.key.toLowerCase() === 'q') send('quit');
+    else if (mod && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 't') send('tab:new');
+    else if (mod && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'w') send('tab:close');
+    else if (mod && !e.altKey && (e.key === 'Tab' || e.key === 'PageDown')) send(e.shiftKey && e.key === 'Tab' ? 'tab:prev' : 'tab:next');
+    else if (mod && !e.altKey && e.key === 'PageUp') send('tab:prev');
     else if (e.altKey && e.key === 'ArrowLeft') history.back();
     else if (e.altKey && e.key === 'ArrowRight') history.forward();
     else handled = false;
@@ -82,12 +85,12 @@ fn print_help() {
            --reset          apaga sessão, cache e preferências\n  \
            -V, --version    mostra a versão\n  \
            -h, --help       mostra esta ajuda\n\n\
-         Atalhos: Ctrl +/-/0 zoom · Ctrl R recarregar · F11 tela cheia · Alt ←/→ voltar/avançar · Ctrl Q sair"
+         Atalhos: Ctrl +/-/0 zoom · Ctrl R recarregar · F11 tela cheia · Ctrl T/W nova/fechar aba · Ctrl Tab alternar abas · Alt ←/→ voltar/avançar · Ctrl Q sair"
     );
 }
 
 /// Abre no navegador/app padrão do sistema, sem bloquear a interface.
-fn open_external(url: &str) {
+pub(crate) fn open_external(url: &str) {
     let opener = std::env::var("NOTION_LITE_OPENER").unwrap_or_else(|_| "xdg-open".into());
     match Command::new(&opener).arg(url).spawn() {
         Ok(mut child) => {
@@ -99,7 +102,7 @@ fn open_external(url: &str) {
     }
 }
 
-fn notify(summary: &str, body: &str) {
+pub(crate) fn notify(summary: &str, body: &str) {
     if let Ok(mut c) = Command::new("notify-send")
         .args(["--app-name=Notion Lite", "--icon", ICON_NAME, summary, body])
         .spawn()
@@ -120,7 +123,7 @@ fn has_gpu_render_node() -> bool {
         .unwrap_or(false)
 }
 
-fn spellcheck_languages() -> Vec<String> {
+pub(crate) fn spellcheck_languages() -> Vec<String> {
     let mut langs = Vec::new();
     for var in ["LC_ALL", "LC_MESSAGES", "LANG"] {
         if let Ok(v) = std::env::var(var) {
@@ -169,10 +172,17 @@ fn main() -> wry::Result<()> {
     }
 
     let requested = args.iter().find_map(|a| urls::from_arg(a));
-    // Só para testes/desenvolvimento: permite apontar para outra URL inicial.
+    // Sem link explícito, reabre as abas da última sessão (já logado, onde parou).
+    let session = if requested.is_none() && std::env::var_os("NOTION_LITE_URL").is_none() {
+        state::load_session()
+    } else {
+        None
+    };
+    // NOTION_LITE_URL: só para testes/desenvolvimento, aponta para outra URL inicial.
     let start_url = requested
         .clone()
         .or_else(|| std::env::var("NOTION_LITE_URL").ok())
+        .or_else(|| session.as_ref().map(|s| s.urls[s.active].clone()))
         .unwrap_or_else(|| {
             if state::is_first_run() {
                 LOGIN_URL
@@ -230,146 +240,56 @@ fn main() -> wry::Result<()> {
 
     let data_dir = state::data_dir();
     let _ = std::fs::create_dir_all(&data_dir);
-    let mut context = WebContext::new(Some(data_dir));
+    let context = WebContext::new(Some(data_dir));
 
-    let title_proxy = proxy.clone();
-    let ipc_proxy = proxy.clone();
-    let webview = WebViewBuilder::new_with_web_context(&mut context)
-        .with_url(&start_url)
-        .with_clipboard(true)
-        .with_devtools(devtools)
-        .with_autoplay(true)
-        .with_initialization_script_for_main_only(INIT_SCRIPT, true)
-        .with_ipc_handler(move |req| {
-            let _ = ipc_proxy.send_event(UserEvent::Ipc(req.body().clone()));
-        })
-        .with_document_title_changed_handler(move |title| {
-            let _ = title_proxy.send_event(UserEvent::Title(title));
-        })
-        // mailto:, tel:, zoommtg:, slack: ... vão para o app do sistema.
-        .with_navigation_handler(|url| {
-            if urls::stays_in_app(&url) {
-                true
-            } else {
-                open_external(&url);
-                false
+    let opts = tabs::Options {
+        devtools,
+        safe_mode,
+        new_instance,
+        restart_url: start_url.clone(),
+    };
+    let container = window.default_vbox().expect("janela sem vbox GTK");
+    let mut tabs = Tabs::new(container, context, proxy.clone(), opts, win_state.zoom);
+    match &session {
+        Some(sess) => {
+            for url in &sess.urls {
+                tabs.open(url)?;
             }
-        })
-        // Links com target=_blank e window.open(): Notion e login (Google, Apple,
-        // Microsoft, SSO) abrem como popup ligado à janela principal; o resto vai
-        // para o navegador padrão.
-        .with_new_window_req_handler(|url, features| {
-            if url.is_empty()
-                || url == "about:blank"
-                || urls::is_notion(&url)
-                || urls::is_auth(&url)
-            {
-                NewWindowResponse::Create {
-                    webview: popup::open(&features.opener.webview, &url),
-                }
-            } else {
-                open_external(&url);
-                NewWindowResponse::Deny
-            }
-        })
-        .with_download_completed_handler(|_url, path, ok| {
-            let name = path
-                .as_ref()
-                .and_then(|p| p.file_name())
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            if ok {
-                notify("Download concluído", &name);
-            } else {
-                notify("Falha no download", &name);
-            }
-        })
-        .build_gtk(window.default_vbox().expect("janela sem vbox GTK"))?;
-
-    // Ajustes direto no WebKitGTK.
-    let wk = webview.webview();
-    if let Some(ctx) = wk.context() {
-        ctx.set_cache_model(CacheModel::DocumentBrowser);
-        ctx.set_spell_checking_enabled(true);
-        let langs = spellcheck_languages();
-        let refs: Vec<&str> = langs.iter().map(String::as_str).collect();
-        ctx.set_spell_checking_languages(&refs);
-    }
-    if let Some(settings) = WebKitViewExt::settings(&wk) {
-        settings.set_enable_smooth_scrolling(true);
-        settings.set_enable_back_forward_navigation_gestures(true);
-        settings.set_javascript_can_access_clipboard(true);
-        settings.set_enable_developer_extras(devtools);
-        if safe_mode {
-            settings.set_hardware_acceleration_policy(HardwareAccelerationPolicy::Never);
+            tabs.select(sess.active);
         }
+        None => tabs.open(&start_url)?,
     }
-    // O processo de renderização caiu (ex.: EGL_BAD_PARAMETER com alguns drivers)?
-    // Sem modo seguro, reabre o app nele e lembra a escolha; com ele, só recarrega.
-    if !safe_mode {
-        let restart_url = start_url.clone();
-        let keep_socket = new_instance;
-        wk.connect_web_process_terminated(move |_, reason| {
-            if reason != WebProcessTerminationReason::Crashed {
-                return;
-            }
-            eprintln!(
-                "notion-lite: o motor de renderização caiu; reabrindo em modo seguro (--safe-mode)"
-            );
-            state::set_safe_mode(true);
-            if !keep_socket {
-                instance::cleanup();
-            }
-            if let Ok(exe) = std::env::current_exe() {
-                let mut cmd = Command::new(exe);
-                cmd.arg("--safe-mode");
-                if keep_socket {
-                    cmd.arg("--new-instance");
-                }
-                if urls::from_arg(&restart_url).is_some() {
-                    cmd.arg(&restart_url);
-                }
-                let _ = cmd.spawn();
-            }
-            std::process::exit(0);
-        });
-    } else {
-        wk.connect_web_process_terminated(|wv, reason| {
-            if reason == WebProcessTerminationReason::Crashed {
-                wv.reload();
-            }
-        });
-    }
-
-    // Notificações (lembretes, menções) e microfone (Notion AI Meeting Notes).
-    wk.connect_permission_request(|_, request| {
-        if request.is::<NotificationPermissionRequest>() {
-            request.allow();
-            return true;
-        }
-        if let Some(media) = request.downcast_ref::<UserMediaPermissionRequest>() {
-            if media.is_for_audio_device() && !media.is_for_video_device() {
-                request.allow();
-                return true;
-            }
-        }
-        false
-    });
-    let _ = webview.zoom(win_state.zoom);
-
-    let webview = Rc::new(webview);
     let fullscreen = Rc::new(RefCell::new(false));
 
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Wait;
         match event {
-            Event::UserEvent(UserEvent::Title(title)) => {
-                let title = title.trim();
-                window.set_title(if title.is_empty() { "Notion" } else { title });
+            Event::UserEvent(UserEvent::Title(id, title)) => {
+                tabs.set_title(id, &title);
+                window.set_title(tabs.current_title());
+            }
+            Event::UserEvent(UserEvent::Switched) => {
+                window.set_title(tabs.current_title());
+                tabs.focus_current();
+            }
+            Event::UserEvent(UserEvent::NewTab(url)) => {
+                let url = url.unwrap_or_else(|| HOME_URL.to_string());
+                if let Err(e) = tabs.open(&url) {
+                    eprintln!("notion-lite: não foi possível abrir a aba: {e}");
+                }
+            }
+            Event::UserEvent(UserEvent::CloseTab(id)) => {
+                if tabs.close(id) {
+                    *control_flow = ControlFlow::Exit;
+                }
             }
             Event::UserEvent(UserEvent::Remote(msg)) => {
+                // Link de fora (notion://, xdg-open): abre numa aba nova em vez de
+                // sobrescrever o que a pessoa está fazendo.
                 if let Some(url) = urls::from_arg(&msg) {
-                    let _ = webview.load_url(&url);
+                    if let Err(e) = tabs.open(&url) {
+                        eprintln!("notion-lite: não foi possível abrir a aba: {e}");
+                    }
                 }
                 window.set_minimized(false);
                 window.set_visible(true);
@@ -383,8 +303,18 @@ fn main() -> wry::Result<()> {
                         _ => 1.0,
                     };
                     win_state.zoom = (win_state.zoom * 10.0).round() / 10.0;
-                    let _ = webview.zoom(win_state.zoom);
+                    tabs.set_zoom(win_state.zoom);
                 }
+                "tab:new" => {
+                    let _ = tabs.open(HOME_URL);
+                }
+                "tab:close" => {
+                    if tabs.close_current() {
+                        *control_flow = ControlFlow::Exit;
+                    }
+                }
+                "tab:next" => tabs.cycle(1),
+                "tab:prev" => tabs.cycle(-1),
                 "fullscreen" => {
                     let mut fs = fullscreen.borrow_mut();
                     *fs = !*fs;
@@ -400,6 +330,7 @@ fn main() -> wry::Result<()> {
                 *control_flow = ControlFlow::Exit;
             }
             Event::LoopDestroyed => {
+                state::save_session(&tabs.session());
                 win_state.maximized = window.is_maximized();
                 if !win_state.maximized && !*fullscreen.borrow() {
                     let size = window.inner_size().to_logical::<f64>(window.scale_factor());
