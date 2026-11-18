@@ -27,7 +27,7 @@ Measured on x86-64 Linux without a GPU (Xvfb), summing the PSS of all processes.
 Everything the Notion web app does works: pages, databases, AI, comments, Calendar, Mail, sharing, real-time collaboration, import/export. On top of that, Notion Lite adds:
 
 - **Persistent session.** Log in once and stay logged in.
-- **Google, Apple, Microsoft, passkey and SSO login.** It opens in a popup inside the app and returns you logged in.
+- **Google, Apple, Microsoft, passkey and SSO login.** It opens in a popup inside the app and returns you logged in. The popup identifies itself as Firefox, so Google doesn't block it with "this browser or app may not be secure".
 - **External links** open in your default browser. `mailto:`, `zoommtg:`, `slack:` and similar links go to the right app.
 - **`notion://` links** and Notion links opened by the system land in the window that's already open (single instance).
 - **Downloads** go to `~/Downloads`, with a notification when they finish.

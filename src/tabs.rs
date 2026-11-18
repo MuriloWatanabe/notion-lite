@@ -177,7 +177,11 @@ impl Tabs {
                     .map(|n| n.to_string_lossy().into_owned())
                     .unwrap_or_default();
                 crate::notify(
-                    if ok { "Download concluído" } else { "Falha no download" },
+                    if ok {
+                        "Download concluído"
+                    } else {
+                        "Falha no download"
+                    },
                     &name,
                 );
             })

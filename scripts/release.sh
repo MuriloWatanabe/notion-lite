@@ -3,6 +3,7 @@
 #
 #   scripts/release.sh 0.2.0
 #
+# 0. Roda as checagens do CI (cargo fmt/clippy/test) e para se algo falhar
 # 1. Atualiza a versão em Cargo.toml, Cargo.lock, aur/notion-lite/PKGBUILD e .SRCINFO
 # 2. Faz commit, cria a tag v0.2.0 e envia para o GitHub
 #    → o GitHub Actions compila e publica o pacote em Releases
@@ -26,6 +27,17 @@ if git rev-parse -q --verify "refs/tags/v$v" >/dev/null; then
   echo "A tag v$v já existe." >&2
   exit 1
 fi
+
+# Mesmas checagens do CI: falhar aqui é melhor que publicar uma tag com o CI vermelho.
+export PATH="$HOME/.cargo/bin:$PATH"
+if ! command -v cargo >/dev/null; then
+  echo "cargo não encontrado — instale o Rust (rustup) para rodar as checagens do CI." >&2
+  exit 1
+fi
+echo "==> Checagens do CI (fmt, clippy, testes)"
+cargo fmt --check || { echo "Formatação fora do padrão: rode 'cargo fmt' e faça commit." >&2; exit 1; }
+cargo clippy --all-targets -q -- -D warnings
+cargo test -q
 
 echo "==> Versão $v"
 # Cargo.toml: primeira linha "version = ..." (a do [package])
