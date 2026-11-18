@@ -94,32 +94,52 @@ pub fn set_safe_mode(on: bool) {
 #[serde(default)]
 pub struct Session {
     pub urls: Vec<String>,
+    /// Títulos das abas (mesma ordem de `urls`), mostrados antes de a aba carregar.
+    pub titles: Vec<String>,
     pub active: usize,
 }
 
-const MAX_RESTORED_TABS: usize = 12;
+/// Abas restauradas dormem até serem clicadas, então restaurar muitas não custa RAM.
+const MAX_RESTORED_TABS: usize = 20;
 
 fn session_file() -> PathBuf {
     config_dir().join("session.json")
 }
 
-/// Só páginas do Notion fora das telas de login/saída valem a pena restaurar.
+/// Só páginas do Notion fora das telas de login/saída valem a pena restaurar. Anexos
+/// (PDF, imagem) ficam de fora: o link é assinado e expira.
 pub fn restorable(url: &str) -> bool {
     crate::urls::is_notion(url)
         && url.starts_with("https://")
+        && !crate::urls::is_file(url)
         && !["/login", "/logout", "/signup", "/onboarding"]
             .iter()
             .any(|p| url.contains(p))
 }
 
 pub fn load_session() -> Option<Session> {
-    let mut s: Session = std::fs::read_to_string(session_file())
-        .ok()
-        .and_then(|t| serde_json::from_str(&t).ok())?;
-    s.urls.retain(|u| restorable(u));
-    s.urls.truncate(MAX_RESTORED_TABS);
-    s.active = s.active.min(s.urls.len().saturating_sub(1));
-    (!s.urls.is_empty()).then_some(s)
+    let saved: Session =
+        serde_json::from_str(&std::fs::read_to_string(session_file()).ok()?).ok()?;
+    let session = clean_session(saved);
+    (!session.urls.is_empty()).then_some(session)
+}
+
+/// Descarta abas que não valem restaurar, mantendo títulos e aba ativa alinhados.
+fn clean_session(saved: Session) -> Session {
+    let mut session = Session::default();
+    for (i, url) in saved.urls.into_iter().enumerate() {
+        if session.urls.len() == MAX_RESTORED_TABS || !restorable(&url) {
+            continue;
+        }
+        if i == saved.active {
+            session.active = session.urls.len();
+        }
+        session
+            .titles
+            .push(saved.titles.get(i).cloned().unwrap_or_default());
+        session.urls.push(url);
+    }
+    session
 }
 
 pub fn save_session(session: &Session) {
@@ -131,5 +151,58 @@ pub fn save_session(session: &Session) {
         if let Ok(json) = serde_json::to_string(session) {
             let _ = std::fs::write(session_file(), json);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn session(urls: &[&str], titles: &[&str], active: usize) -> Session {
+        Session {
+            urls: urls.iter().map(|s| s.to_string()).collect(),
+            titles: titles.iter().map(|s| s.to_string()).collect(),
+            active,
+        }
+    }
+
+    #[test]
+    fn sessao_descarta_e_mantem_alinhado() {
+        let saved = session(
+            &[
+                "https://app.notion.com/login",
+                "https://app.notion.com/p/A",
+                "https://file.notion.so/f/x.pdf",
+                "https://app.notion.com/p/B",
+            ],
+            &["Login", "A", "x.pdf", "B"],
+            3,
+        );
+        let s = clean_session(saved);
+        assert_eq!(
+            s.urls,
+            ["https://app.notion.com/p/A", "https://app.notion.com/p/B"]
+        );
+        assert_eq!(s.titles, ["A", "B"]);
+        assert_eq!(s.active, 1);
+    }
+
+    #[test]
+    fn sessao_antiga_sem_titulos() {
+        let saved: Session =
+            serde_json::from_str(r#"{"urls":["https://app.notion.com/p/A"],"active":0}"#).unwrap();
+        let s = clean_session(saved);
+        assert_eq!(s.titles, [""]);
+        assert_eq!(s.active, 0);
+    }
+
+    #[test]
+    fn aba_ativa_descartada_cai_na_primeira() {
+        let saved = session(
+            &["https://app.notion.com/p/A", "https://www.notion.so/logout"],
+            &[],
+            1,
+        );
+        assert_eq!(clean_session(saved).active, 0);
     }
 }

@@ -26,7 +26,9 @@ Measured on x86-64 Linux without a GPU (Xvfb), summing the PSS of all processes.
 
 Everything the Notion web app does works: pages, databases, AI, comments, Calendar, Mail, sharing, real-time collaboration, import/export. On top of that, Notion Lite adds:
 
-- **Persistent session.** Log in once and stay logged in.
+- **Persistent session.** Log in once and stay logged in. Your open tabs come back the next time you start the app.
+- **Tabs.** Open several pages in one window with `Ctrl+T` or the `+` button. Notion links that would open a new browser tab open as a tab here. Drag tabs to reorder them.
+- **Light with many tabs.** Each loaded tab runs its own copy of Notion (about 1 GB), so Notion Lite keeps few of them in memory. Only the visible tab loads at startup, at most 3 tabs stay loaded, and a tab left in the background for 10 minutes goes to sleep and frees its memory. A sleeping tab reloads when you click it. Tabs playing audio or using the microphone never sleep.
 - **Google, Apple, Microsoft, passkey and SSO login.** It opens in a popup inside the app and returns you logged in. The popup identifies itself as Firefox, so Google doesn't block it with "this browser or app may not be secure".
 - **External links** open in your default browser. `mailto:`, `zoommtg:`, `slack:` and similar links go to the right app.
 - **`notion://` links** and Notion links opened by the system land in the window that's already open (single instance).
@@ -44,6 +46,8 @@ Everything the Notion web app does works: pages, databases, AI, comments, Calend
 | `Ctrl` `R` or `F5` | Reload |
 | `F11` | Fullscreen |
 | `Alt` `←` / `→` | Back / forward |
+| `Ctrl` `T` / `Ctrl` `W` | New tab / close tab |
+| `Ctrl` `Tab` / `Ctrl` `Shift` `Tab` | Next / previous tab (also `Ctrl` `PgDn` / `PgUp`) |
 | `Ctrl` `Q` | Quit |
 
 Notion's own shortcuts (`Ctrl+K`, `Ctrl+P`, `/`, etc.) keep working as usual.
@@ -119,6 +123,12 @@ notion-lite [options] [URL]
   --new-instance   open a separate, independent window
   --devtools       enable the web inspector
   --reset          delete session, cache and preferences
+```
+
+To change how long a background tab waits before it goes to sleep, set `NOTION_LITE_TAB_SLEEP` to a number of minutes. `0` keeps every tab loaded, which uses more memory:
+
+```bash
+NOTION_LITE_TAB_SLEEP=30 notion-lite
 ```
 
 ## Troubleshooting

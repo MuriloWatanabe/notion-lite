@@ -11,7 +11,7 @@ mod state;
 mod tabs;
 mod urls;
 
-use std::{cell::RefCell, process::Command, rc::Rc};
+use std::{cell::RefCell, process::Command, rc::Rc, time::Duration};
 
 use gtk::prelude::GtkWindowExt;
 
@@ -34,6 +34,8 @@ const HOME_URL: &str = "https://app.notion.com/";
 /// Na primeira execução vai direto para o login em vez da página de marketing.
 const LOGIN_URL: &str = "https://www.notion.so/login";
 const VERSION: &str = env!("CARGO_PKG_VERSION");
+/// Minutos em segundo plano até uma aba dormir (fechar o processo do WebKit e liberar a RAM).
+const DEFAULT_TAB_SLEEP_MINUTES: u64 = 10;
 
 #[derive(Debug)]
 enum UserEvent {
@@ -42,6 +44,8 @@ enum UserEvent {
     CloseTab(u64),
     /// A aba ativa mudou.
     Switched,
+    /// Relógio de 1 minuto: hora de ver se alguma aba em segundo plano deve dormir.
+    Tick,
     /// Pedido vindo de outra instância (ou de um link notion://).
     Remote(String),
     Ipc(String),
@@ -85,6 +89,9 @@ fn print_help() {
            --reset          apaga sessão, cache e preferências\n  \
            -V, --version    mostra a versão\n  \
            -h, --help       mostra esta ajuda\n\n\
+         Variáveis:\n  \
+           NOTION_LITE_TAB_SLEEP=MIN  minutos até uma aba em segundo plano dormir e liberar\n                             \
+           a memória (padrão {DEFAULT_TAB_SLEEP_MINUTES}; 0 = abas nunca dormem)\n\n\
          Atalhos: Ctrl +/-/0 zoom · Ctrl R recarregar · F11 tela cheia · Ctrl T/W nova/fechar aba · Ctrl Tab alternar abas · Alt ←/→ voltar/avançar · Ctrl Q sair"
     );
 }
@@ -111,6 +118,15 @@ pub(crate) fn notify(summary: &str, body: &str) {
             let _ = c.wait();
         });
     }
+}
+
+/// Quanto tempo uma aba fica em segundo plano antes de dormir. `None`: nunca dorme.
+fn tab_sleep_after() -> Option<Duration> {
+    let minutes = std::env::var("NOTION_LITE_TAB_SLEEP")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(DEFAULT_TAB_SLEEP_MINUTES);
+    (minutes > 0).then(|| Duration::from_secs(minutes.saturating_mul(60)))
 }
 
 fn has_gpu_render_node() -> bool {
@@ -242,22 +258,34 @@ fn main() -> wry::Result<()> {
     let _ = std::fs::create_dir_all(&data_dir);
     let context = WebContext::new(Some(data_dir));
 
+    let sleep_after = tab_sleep_after();
     let opts = tabs::Options {
         devtools,
         safe_mode,
         new_instance,
         restart_url: start_url.clone(),
+        sleep_after,
     };
     let container = window.default_vbox().expect("janela sem vbox GTK");
     let mut tabs = Tabs::new(container, context, proxy.clone(), opts, win_state.zoom);
     match &session {
+        // Só a aba ativa carrega agora; as outras dormem até serem clicadas.
         Some(sess) => {
-            for url in &sess.urls {
-                tabs.open(url)?;
+            for (i, url) in sess.urls.iter().enumerate() {
+                let title = sess.titles.get(i).map(String::as_str).unwrap_or("");
+                tabs.add_sleeping(url, title);
             }
             tabs.select(sess.active);
+            tabs.on_switched()?;
         }
         None => tabs.open(&start_url)?,
+    }
+    if sleep_after.is_some() {
+        let tick = proxy.clone();
+        gtk::glib::timeout_add_seconds_local(60, move || {
+            let _ = tick.send_event(UserEvent::Tick);
+            gtk::glib::ControlFlow::Continue
+        });
     }
     let fullscreen = Rc::new(RefCell::new(false));
 
@@ -269,9 +297,13 @@ fn main() -> wry::Result<()> {
                 window.set_title(tabs.current_title());
             }
             Event::UserEvent(UserEvent::Switched) => {
+                if let Err(e) = tabs.on_switched() {
+                    eprintln!("notion-lite: não foi possível carregar a aba: {e}");
+                }
                 window.set_title(tabs.current_title());
                 tabs.focus_current();
             }
+            Event::UserEvent(UserEvent::Tick) => tabs.sleep_idle(),
             Event::UserEvent(UserEvent::NewTab(url)) => {
                 let url = url.unwrap_or_else(|| HOME_URL.to_string());
                 if let Err(e) = tabs.open(&url) {

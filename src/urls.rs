@@ -39,6 +39,17 @@ pub fn is_notion(url: &str) -> bool {
     })
 }
 
+/// Arquivos servidos pelo Notion (anexos, imagens, PDFs): não carregam o app do Notion
+/// e o link é assinado e expira.
+pub fn is_file(url: &str) -> bool {
+    host(url).is_some_and(|h| {
+        (h.starts_with("file.") && is_notion(url))
+            || ["notionusercontent.com", "notion-static.com"]
+                .iter()
+                .any(|d| is_or_sub(&h, d))
+    })
+}
+
 /// Provedores de login usados por "Continuar com Google/Apple/Microsoft" e SSO (SAML).
 pub fn is_auth(url: &str) -> bool {
     host(url).is_some_and(|h| {
@@ -114,6 +125,16 @@ mod tests {
         assert!(!is_notion("https://notion.so.evil.com/"));
         assert!(!is_notion("https://evilnotion.so/"));
         assert!(!is_notion("https://github.com/"));
+    }
+
+    #[test]
+    fn arquivos() {
+        assert!(is_file("https://file.notion.so/f/f/abc/x.pdf?sig=1"));
+        assert!(is_file("https://prod.notionusercontent.com/x.png"));
+        assert!(is_file("https://www.notion-static.com/img.png"));
+        assert!(!is_file("https://app.notion.com/p/Page-1"));
+        assert!(!is_file("https://www.notion.so/acme/Page-1"));
+        assert!(!is_file("https://file.example.com/x.pdf"));
     }
 
     #[test]
