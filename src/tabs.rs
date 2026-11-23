@@ -16,11 +16,13 @@ use std::{
 use gtk::prelude::*;
 use tao::event_loop::EventLoopProxy;
 use webkit2gtk::{
-    CacheModel, HardwareAccelerationPolicy, MediaCaptureState, NotificationPermissionRequest,
-    PermissionRequestExt, SettingsExt, UserMediaPermissionRequest, UserMediaPermissionRequestExt,
-    WebContextExt, WebProcessTerminationReason, WebViewExt as WebKitViewExt,
+    AutoplayPolicy, HardwareAccelerationPolicy, InputMethodContextExt, MediaCaptureState,
+    NavigationPolicyDecision, NavigationPolicyDecisionExt, NotificationPermissionRequest,
+    PermissionRequestExt, PolicyDecisionExt, PolicyDecisionType, SettingsExt, URIRequestExt,
+    UserContentInjectedFrames, UserContentManager, UserContentManagerExt,
+    UserMediaPermissionRequest, UserMediaPermissionRequestExt, UserScript, UserScriptInjectionTime,
+    WebContext, WebProcessTerminationReason, WebView, WebViewExt, WebsitePolicies,
 };
-use wry::{NewWindowResponse, WebContext, WebViewBuilder, WebViewBuilderExtUnix, WebViewExtUnix};
 
 use crate::{instance, open_external, popup, state, urls, UserEvent};
 
@@ -44,7 +46,7 @@ struct Tab {
     /// Página do notebook. O WebView entra nela quando a aba acorda e sai quando dorme.
     page: gtk::Box,
     /// `None`: aba dormindo, sem processo do WebKit.
-    view: Option<wry::WebView>,
+    view: Option<WebView>,
     /// Endereço para recarregar a aba quando ela acordar.
     url: String,
     label: gtk::Label,
@@ -58,7 +60,8 @@ impl Tab {
     fn current_url(&self) -> String {
         self.view
             .as_ref()
-            .and_then(|v| v.url().ok())
+            .and_then(|v| v.uri())
+            .map(|u| u.to_string())
             .filter(|u| !u.is_empty() && u != "about:blank")
             .unwrap_or_else(|| self.url.clone())
     }
@@ -66,10 +69,9 @@ impl Tab {
     /// Carregada, sem áudio tocando nem microfone/câmera/tela em uso (ex.: Notion AI
     /// Meeting Notes gravando) e com o app do Notion (anexos são leves e têm link que expira).
     fn can_sleep(&self) -> bool {
-        let Some(view) = &self.view else {
+        let Some(wk) = &self.view else {
             return false;
         };
-        let wk = view.webview();
         let capturing = [
             wk.microphone_capture_state(),
             wk.camera_capture_state(),
@@ -78,6 +80,14 @@ impl Tab {
         .into_iter()
         .any(|s| !matches!(s, MediaCaptureState::None));
         !wk.is_playing_audio() && !capturing && !urls::is_file(&self.current_url())
+    }
+
+    /// Fecha o WebView; sem outra página nele, o processo do WebKit termina.
+    fn unload(&mut self) {
+        if let Some(view) = self.view.take() {
+            // SAFETY: o widget não é usado depois; destroy() o tira da página e libera.
+            unsafe { view.destroy() };
+        }
     }
 }
 
@@ -89,8 +99,6 @@ pub struct Tabs {
     proxy: EventLoopProxy<UserEvent>,
     opts: Options,
     zoom: f64,
-    /// O primeiro WebView já configurou o contexto compartilhado (cache, ortografia, downloads).
-    context_ready: bool,
 }
 
 impl Tabs {
@@ -131,17 +139,15 @@ impl Tabs {
             proxy,
             opts,
             zoom,
-            context_ready: false,
         }
     }
 
     /// Abre uma aba já carregada no fim e passa a mostrá-la.
-    pub fn open(&mut self, url: &str) -> wry::Result<()> {
+    pub fn open(&mut self, url: &str) {
         let i = self.add(url, "");
-        self.wake(i)?;
+        self.wake(i);
         let page = self.notebook.page_num(&self.tabs[i].page);
         self.notebook.set_current_page(page);
-        Ok(())
     }
 
     /// Acrescenta uma aba dormindo (sessão restaurada): só carrega quando for mostrada.
@@ -173,32 +179,29 @@ impl Tabs {
     }
 
     /// Carrega a aba, se ela estiver dormindo.
-    fn wake(&mut self, i: usize) -> wry::Result<()> {
+    fn wake(&mut self, i: usize) {
         if self.tabs[i].view.is_some() {
-            return Ok(());
+            return;
         }
-        let (id, url, page) = {
-            let t = &self.tabs[i];
-            (t.id, t.url.clone(), t.page.clone())
-        };
-        let view = self.build_view(id, &url, &page)?;
-        let _ = view.zoom(self.zoom);
-        self.tabs[i].view = Some(view);
-        Ok(())
+        let view = self.build_view(self.tabs[i].id);
+        let t = &mut self.tabs[i];
+        t.page.pack_start(&view, true, true, 0);
+        view.show();
+        view.load_uri(&t.url);
+        t.view = Some(view);
     }
 
-    /// Destrói o WebView da aba; sem outra página nele, o processo do WebKit fecha.
     fn sleep(&mut self, i: usize) {
         let t = &mut self.tabs[i];
         t.url = t.current_url();
-        t.view = None;
+        t.unload();
     }
 
     /// A aba visível mudou: acorda a nova, marca as outras como em segundo plano e, se
     /// houver abas carregadas demais, faz dormir a que foi usada há mais tempo.
-    pub fn on_switched(&mut self) -> wry::Result<()> {
+    pub fn on_switched(&mut self) {
         let Some(cur) = self.current_index() else {
-            return Ok(());
+            return;
         };
         let now = Instant::now();
         for (i, t) in self.tabs.iter_mut().enumerate() {
@@ -208,7 +211,7 @@ impl Tabs {
                 t.hidden_since = Some(now);
             }
         }
-        self.wake(cur)?;
+        self.wake(cur);
         if self.opts.sleep_after.is_some() {
             while self.tabs.iter().filter(|t| t.view.is_some()).count() > MAX_AWAKE {
                 let oldest = self
@@ -224,7 +227,6 @@ impl Tabs {
                 }
             }
         }
-        Ok(())
     }
 
     /// Chamado periodicamente: faz dormir as abas em segundo plano há mais de `sleep_after`.
@@ -263,95 +265,116 @@ impl Tabs {
         (row, label)
     }
 
-    fn build_view(&mut self, id: u64, url: &str, page: &gtk::Box) -> wry::Result<wry::WebView> {
-        let first = !self.context_ready;
-        let title_proxy = self.proxy.clone();
-        let ipc_proxy = self.proxy.clone();
-        let window_proxy = self.proxy.clone();
-
-        let mut builder = WebViewBuilder::new_with_web_context(&mut self.context)
-            .with_url(url)
-            .with_clipboard(true)
-            .with_devtools(self.opts.devtools)
-            .with_autoplay(true)
-            .with_initialization_script_for_main_only(crate::INIT_SCRIPT, true)
-            .with_ipc_handler(move |req| {
-                let _ = ipc_proxy.send_event(UserEvent::Ipc(req.body().clone()));
-            })
-            .with_document_title_changed_handler(move |title| {
-                let _ = title_proxy.send_event(UserEvent::Title(id, title));
-            })
-            // mailto:, tel:, zoommtg:, slack: ... vão para o app do sistema.
-            .with_navigation_handler(|url| {
-                if urls::stays_in_app(&url) {
-                    true
-                } else {
-                    open_external(&url);
-                    false
-                }
-            })
-            // target=_blank / window.open(): páginas do Notion viram aba; login (Google,
-            // Apple, SSO) e janelas em branco abrem como popup ligado à janela de origem
-            // (precisam do `window.opener`); o resto vai para o navegador padrão.
-            .with_new_window_req_handler(move |url, features| {
-                if urls::is_notion(&url) {
-                    let _ = window_proxy.send_event(UserEvent::NewTab(Some(url)));
-                    NewWindowResponse::Deny
-                } else if url.is_empty() || url == "about:blank" || urls::is_auth(&url) {
-                    NewWindowResponse::Create {
-                        webview: popup::open(&features.opener.webview, &url),
-                    }
-                } else {
-                    open_external(&url);
-                    NewWindowResponse::Deny
-                }
-            });
-        // O wry liga os handlers de download no WebContext compartilhado, e não no WebView:
-        // registrando em toda aba, cada download avisaria uma vez por aba já criada.
-        if first {
-            builder = builder.with_download_completed_handler(|_url, path, ok| {
-                let name = path
-                    .as_ref()
-                    .and_then(|p| p.file_name())
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_default();
-                crate::notify(
-                    if ok {
-                        "Download concluído"
-                    } else {
-                        "Falha no download"
-                    },
-                    &name,
-                );
-            });
-        }
-        let webview = builder.build_gtk(page)?;
-
-        let wk = webview.webview();
-        if first {
-            if let Some(ctx) = wk.context() {
-                // DocumentBrowser mantém o cache em disco (abas que acordam recarregam
-                // rápido); DocumentViewer o desligaria.
-                ctx.set_cache_model(CacheModel::DocumentBrowser);
-                ctx.set_spell_checking_enabled(true);
-                let langs = crate::spellcheck_languages();
-                let refs: Vec<&str> = langs.iter().map(String::as_str).collect();
-                ctx.set_spell_checking_languages(&refs);
+    fn build_view(&self, id: u64) -> WebView {
+        // Atalhos de teclado (INIT_SCRIPT) falam com o app por esta ponte.
+        let scripts = UserContentManager::new();
+        scripts.add_script(&UserScript::new(
+            crate::INIT_SCRIPT,
+            UserContentInjectedFrames::TopFrame,
+            UserScriptInjectionTime::Start,
+            &[],
+            &[],
+        ));
+        let p = self.proxy.clone();
+        scripts.connect_script_message_received(Some("ipc"), move |_, msg| {
+            if let Some(value) = msg.js_value() {
+                let _ = p.send_event(UserEvent::Ipc(value.to_string()));
             }
-            self.context_ready = true;
-        }
-        if let Some(settings) = WebKitViewExt::settings(&wk) {
+        });
+        scripts.register_script_message_handler("ipc");
+
+        let wk = WebView::builder()
+            .web_context(&self.context)
+            .user_content_manager(&scripts)
+            .website_policies(
+                &WebsitePolicies::builder()
+                    .autoplay(AutoplayPolicy::Allow)
+                    .build(),
+            )
+            .build();
+
+        if let Some(settings) = WebViewExt::settings(&wk) {
             settings.set_enable_smooth_scrolling(true);
             settings.set_enable_back_forward_navigation_gestures(true);
             settings.set_javascript_can_access_clipboard(true);
+            settings.set_enable_webgl(true);
+            settings.set_enable_webaudio(true);
             settings.set_enable_developer_extras(self.opts.devtools);
-            // O wry liga o cache de voltar/avançar, que guarda a página anterior inteira na
-            // memória (às vezes num processo à parte). O Notion é uma página só: não ajuda.
+            // O cache de voltar/avançar guarda a página anterior inteira na memória (às
+            // vezes num processo à parte). O Notion é uma página só: não ajuda.
             settings.set_enable_page_cache(false);
             if self.opts.safe_mode {
                 settings.set_hardware_acceleration_policy(HardwareAccelerationPolicy::Never);
             }
         }
+        // Sem pré-edição do método de entrada: acentos entram direto no editor do Notion
+        // (era o comportamento de antes, herdado do wry).
+        if let Some(im) = wk.input_method_context() {
+            im.set_enable_preedit(false);
+        }
+
+        let p = self.proxy.clone();
+        wk.connect_title_notify(move |wv| {
+            let title = wv.title().map(|t| t.to_string()).unwrap_or_default();
+            let _ = p.send_event(UserEvent::Title(id, title));
+        });
+
+        // mailto:, tel:, zoommtg:, slack: ... vão para o app do sistema.
+        wk.connect_decide_policy(|_, decision, kind| {
+            if kind != PolicyDecisionType::NavigationAction {
+                return false;
+            }
+            let uri = decision
+                .downcast_ref::<NavigationPolicyDecision>()
+                .and_then(|d| d.navigation_action())
+                .and_then(|a| a.request())
+                .and_then(|r| r.uri())
+                .map(|u| u.to_string());
+            match uri {
+                Some(uri) if !urls::stays_in_app(&uri) => {
+                    open_external(&uri);
+                    decision.ignore();
+                    true
+                }
+                _ => false,
+            }
+        });
+
+        // target=_blank / window.open(): páginas do Notion viram aba; login (Google,
+        // Apple, SSO) e janelas em branco abrem como popup ligado à janela de origem
+        // (precisam do `window.opener`); o resto vai para o navegador padrão.
+        let p = self.proxy.clone();
+        wk.connect_create(move |wv, action| {
+            let url = action
+                .clone()
+                .request()
+                .and_then(|r| r.uri())
+                .map(|u| u.to_string())
+                .unwrap_or_default();
+            if urls::is_notion(&url) {
+                let _ = p.send_event(UserEvent::NewTab(Some(url)));
+                None
+            } else if url.is_empty() || url == "about:blank" || urls::is_auth(&url) {
+                Some(popup::open(wv, &url).upcast())
+            } else {
+                open_external(&url);
+                None
+            }
+        });
+
+        // Botões voltar/avançar do mouse.
+        wk.connect_button_press_event(|wv, event| match event.button() {
+            8 => {
+                wv.go_back();
+                gtk::glib::Propagation::Stop
+            }
+            9 => {
+                wv.go_forward();
+                gtk::glib::Propagation::Stop
+            }
+            _ => gtk::glib::Propagation::Proceed,
+        });
+
         self.watch_crashes(&wk);
 
         // Notificações (lembretes, menções) e microfone (Notion AI Meeting Notes).
@@ -368,12 +391,13 @@ impl Tabs {
             }
             false
         });
-        Ok(webview)
+        wk.set_zoom_level(self.zoom);
+        wk
     }
 
     /// O processo de renderização caiu (ex.: EGL_BAD_PARAMETER com alguns drivers)?
     /// Sem modo seguro, reabre o app nele e lembra a escolha; com ele, só recarrega.
-    fn watch_crashes(&self, wk: &webkit2gtk::WebView) {
+    fn watch_crashes(&self, wk: &WebView) {
         if self.opts.safe_mode {
             wk.connect_web_process_terminated(|wv, reason| {
                 if reason == WebProcessTerminationReason::Crashed {
@@ -444,7 +468,8 @@ impl Tabs {
     /// Fecha a aba; devolve `true` se era a última (o app deve sair).
     pub fn close(&mut self, id: u64) -> bool {
         if let Some(i) = self.index_of(id) {
-            let tab = self.tabs.remove(i);
+            let mut tab = self.tabs.remove(i);
+            tab.unload();
             if let Some(n) = self.notebook.page_num(&tab.page) {
                 self.notebook.remove_page(Some(n));
             }
@@ -491,14 +516,14 @@ impl Tabs {
 
     pub fn focus_current(&self) {
         if let Some(view) = self.current().and_then(|t| t.view.as_ref()) {
-            let _ = view.focus();
+            view.grab_focus();
         }
     }
 
     pub fn set_zoom(&mut self, zoom: f64) {
         self.zoom = zoom;
         for view in self.tabs.iter().filter_map(|t| t.view.as_ref()) {
-            let _ = view.zoom(zoom);
+            view.set_zoom_level(zoom);
         }
     }
 

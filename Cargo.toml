@@ -10,7 +10,6 @@ readme = "README.md"
 keywords = ["notion", "desktop", "webview", "linux"]
 
 [dependencies]
-wry = "0.57"
 tao = "0.37"
 webkit2gtk = { version = "2.0", features = ["v2_40"] }
 gtk = "0.18"

@@ -5,6 +5,7 @@
 //! nativa que falta ao navegador: sessão persistente, links externos no navegador
 //! padrão, popups de login, downloads, `notion://`, instância única e notificações.
 
+mod engine;
 mod instance;
 mod popup;
 mod state;
@@ -15,6 +16,7 @@ use std::{cell::RefCell, process::Command, rc::Rc, time::Duration};
 
 use gtk::prelude::GtkWindowExt;
 
+use crate::{state::WindowState, tabs::Tabs};
 use tao::{
     dpi::{LogicalSize, PhysicalPosition},
     event::{Event, WindowEvent},
@@ -22,9 +24,6 @@ use tao::{
     platform::unix::{EventLoopBuilderExtUnix, WindowExtUnix},
     window::{Fullscreen, WindowBuilder},
 };
-use wry::WebContext;
-
-use crate::{state::WindowState, tabs::Tabs};
 
 const APP_ID: &str = "io.github.murilowatanabe.NotionLite";
 pub const ICON_NAME: &str = "notion-lite";
@@ -54,7 +53,7 @@ enum UserEvent {
 /// Atalhos que um navegador teria e a página do Notion não oferece.
 pub(crate) const INIT_SCRIPT: &str = r#"
 (() => {
-  const send = (m) => window.ipc && window.ipc.postMessage(m);
+  const send = (m) => window.webkit && window.webkit.messageHandlers.ipc.postMessage(m);
   window.addEventListener('keydown', (e) => {
     const mod = e.ctrlKey || e.metaKey;
     let handled = true;
@@ -91,7 +90,9 @@ fn print_help() {
            -h, --help       mostra esta ajuda\n\n\
          Variáveis:\n  \
            NOTION_LITE_TAB_SLEEP=MIN  minutos até uma aba em segundo plano dormir e liberar\n                             \
-           a memória (padrão {DEFAULT_TAB_SLEEP_MINUTES}; 0 = abas nunca dormem)\n\n\
+           a memória (padrão {DEFAULT_TAB_SLEEP_MINUTES}; 0 = abas nunca dormem)\n  \
+           NOTION_LITE_MEMORY_LIMIT=MB  limite de memória de cada aba: o WebKit limpa caches\n                             \
+           acima de ~1/3 dele e faz faxina pesada acima da metade (padrão 2048; 0 = padrão do WebKit)\n\n\
          Atalhos: Ctrl +/-/0 zoom · Ctrl R recarregar · F11 tela cheia · Ctrl T/W nova/fechar aba · Ctrl Tab alternar abas · Alt ←/→ voltar/avançar · Ctrl Q sair"
     );
 }
@@ -156,7 +157,9 @@ pub(crate) fn spellcheck_languages() -> Vec<String> {
     langs
 }
 
-fn main() -> wry::Result<()> {
+fn main() {
+    // Antes de qualquer thread ou processo do WebKit: as abas herdam essas variáveis.
+    engine::tune_javascript();
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     let has = |args: &mut Vec<String>, flag: &str| {
         let found = args.iter().any(|a| a == flag);
@@ -165,11 +168,11 @@ fn main() -> wry::Result<()> {
     };
     if has(&mut args, "-h") || has(&mut args, "--help") {
         print_help();
-        return Ok(());
+        return;
     }
     if has(&mut args, "-V") || has(&mut args, "--version") {
         println!("notion-lite {VERSION}");
-        return Ok(());
+        return;
     }
     if has(&mut args, "--gpu") {
         state::set_safe_mode(false);
@@ -184,7 +187,7 @@ fn main() -> wry::Result<()> {
         let _ = std::fs::remove_dir_all(state::data_dir());
         let _ = std::fs::remove_dir_all(state::config_dir());
         println!("Sessão, cache e preferências apagados.");
-        return Ok(());
+        return;
     }
 
     let requested = args.iter().find_map(|a| urls::from_arg(a));
@@ -210,7 +213,7 @@ fn main() -> wry::Result<()> {
 
     // Já existe uma janela aberta? Entrega o link (ou só pede foco) e sai.
     if !new_instance && instance::forward(requested.as_deref().unwrap_or("focus")) {
-        return Ok(());
+        return;
     }
 
     // Sem GPU (VM, servidor, driver ausente) o caminho acelerado só usa renderização por
@@ -256,7 +259,7 @@ fn main() -> wry::Result<()> {
 
     let data_dir = state::data_dir();
     let _ = std::fs::create_dir_all(&data_dir);
-    let context = WebContext::new(Some(data_dir));
+    let context = engine::context(&data_dir);
 
     let sleep_after = tab_sleep_after();
     let opts = tabs::Options {
@@ -276,9 +279,9 @@ fn main() -> wry::Result<()> {
                 tabs.add_sleeping(url, title);
             }
             tabs.select(sess.active);
-            tabs.on_switched()?;
+            tabs.on_switched();
         }
-        None => tabs.open(&start_url)?,
+        None => tabs.open(&start_url),
     }
     if sleep_after.is_some() {
         let tick = proxy.clone();
@@ -297,18 +300,14 @@ fn main() -> wry::Result<()> {
                 window.set_title(tabs.current_title());
             }
             Event::UserEvent(UserEvent::Switched) => {
-                if let Err(e) = tabs.on_switched() {
-                    eprintln!("notion-lite: não foi possível carregar a aba: {e}");
-                }
+                tabs.on_switched();
                 window.set_title(tabs.current_title());
                 tabs.focus_current();
             }
             Event::UserEvent(UserEvent::Tick) => tabs.sleep_idle(),
             Event::UserEvent(UserEvent::NewTab(url)) => {
                 let url = url.unwrap_or_else(|| HOME_URL.to_string());
-                if let Err(e) = tabs.open(&url) {
-                    eprintln!("notion-lite: não foi possível abrir a aba: {e}");
-                }
+                tabs.open(&url);
             }
             Event::UserEvent(UserEvent::CloseTab(id)) => {
                 if tabs.close(id) {
@@ -319,9 +318,7 @@ fn main() -> wry::Result<()> {
                 // Link de fora (notion://, xdg-open): abre numa aba nova em vez de
                 // sobrescrever o que a pessoa está fazendo.
                 if let Some(url) = urls::from_arg(&msg) {
-                    if let Err(e) = tabs.open(&url) {
-                        eprintln!("notion-lite: não foi possível abrir a aba: {e}");
-                    }
+                    tabs.open(&url);
                 }
                 window.set_minimized(false);
                 window.set_visible(true);
@@ -338,7 +335,7 @@ fn main() -> wry::Result<()> {
                     tabs.set_zoom(win_state.zoom);
                 }
                 "tab:new" => {
-                    let _ = tabs.open(HOME_URL);
+                    tabs.open(HOME_URL);
                 }
                 "tab:close" => {
                     if tabs.close_current() {

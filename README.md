@@ -18,9 +18,10 @@ The Notion clients currently available for Linux bundle a whole Chromium through
 |---|---|---|
 | Executable size | **0.8 MB** | ~150–250 MB per app |
 | RAM on the login screen, no GPU | **~500 MB** | ~700 MB (plain Chromium, without Electron's Node) |
+| RAM with a workspace open, one tab | ~1–1.7 GB | — |
 | Time to login screen | ~3 s | — |
 
-Measured on x86-64 Linux without a GPU (Xvfb), summing the PSS of all processes. Numbers change with a GPU, but the ratio holds. Most of the RAM goes to Notion's own JavaScript, which no client can avoid.
+Measured on x86-64 Linux without a GPU (Xvfb), summing the PSS of all processes. Numbers change with a GPU, but the ratio holds. Most of the RAM goes to Notion's own JavaScript, which no client can avoid: once you log in, the page Notion sends is the full web app, about 1 GB on its own, and it keeps growing as you use it. By default WebKit only starts freeing memory at around 1.5 GB per tab; Notion Lite makes it start at around 700 MB and clean up hard at 1 GB, and tunes JavaScript garbage collection to keep less garbage around.
 
 ## Features
 
@@ -129,6 +130,12 @@ To change how long a background tab waits before it goes to sleep, set `NOTION_L
 
 ```bash
 NOTION_LITE_TAB_SLEEP=30 notion-lite
+```
+
+To change the per-tab memory limit, set `NOTION_LITE_MEMORY_LIMIT` in MB (default `2048`: WebKit frees caches above about a third of it and cleans up hard above half). `0` restores WebKit's defaults, which use more memory but free it less often:
+
+```bash
+NOTION_LITE_MEMORY_LIMIT=3072 notion-lite
 ```
 
 ## Troubleshooting
